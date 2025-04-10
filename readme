@@ -1,0 +1,5 @@
+
+php public/index.php
+
+# тесты
+./vendor/bin/phpunit tests/OrderBookTest.php
