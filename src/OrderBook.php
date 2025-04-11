@@ -1,8 +1,13 @@
 <?php
 
 namespace tob;
+
 class OrderBook
 {
+    private const B = 'B';
+    private const S = 'S';
+
+    private const NO_SELL_PRICE = 9999999999999999;
     private $instruments = [];
 
     public function processOrder(string $inputLine): ?string
@@ -15,51 +20,40 @@ class OrderBook
 
         if (!isset($this->instruments[$instrument_id])) {
             $this->instruments[$instrument_id] = [
-                'B' => ['orders' => [], 'prices' => []],
-                'S' => ['orders' => [], 'prices' => []]
+                self::B => ['orders' => [], 'prices' => new PriceManager(true)],
+                self::S => ['orders' => [], 'prices' => new PriceManager(false)]
             ];
         }
 
         $instrument = &$this->instruments[$instrument_id][$side];
         $orderKey = "$user_id:$clorder_id";
-        $isBid = ($side === 'B');
+        $isBid = ($side === self::B);
 
         // Сохраняем предыдущие лучшие значения ДО изменений
-        $prevBestPrice = $instrument['prices'][0] ?? null;
+        $prevBestPrice = $instrument['prices']->getBestPrice();
         $prevTotalAmount = $this->calculateTotalAmount($instrument, $prevBestPrice);
 
         switch ($action) {
             case '0': // Новая заявка
-                $instrument['orders'][$orderKey] = ['price' => $price, 'amount_rest' => $amount_rest];
-                $this->insertPriceSorted($instrument['prices'], $price, $isBid);
+                $this->addOrder($instrument, $orderKey, $price, $amount_rest);
                 break;
 
             case '1': // Удаление
-                if (!isset($instrument['orders'][$orderKey])) break;
-                $price = $instrument['orders'][$orderKey]['price'];
-                unset($instrument['orders'][$orderKey]);
-                $this->cleanupPrice($instrument, $price);
+                $this->removeOrder($instrument, $orderKey);
                 break;
 
             case '2': // Исполнение
-                if (!isset($instrument['orders'][$orderKey])) break;
-                $oldPrice = $instrument['orders'][$orderKey]['price'];
-                $instrument['orders'][$orderKey]['amount_rest'] = $amount_rest;
-
-                if ($amount_rest === 0) {
-                    unset($instrument['orders'][$orderKey]);
-                    $this->cleanupPrice($instrument, $oldPrice);
-                }
+                $this->executeOrder($instrument, $orderKey, $amount_rest);
                 break;
         }
 
         // Получаем текущие лучшие значения ПОСЛЕ изменений
-        $currentBestPrice = $instrument['prices'][0] ?? null;
+        $currentBestPrice = $instrument['prices']->getBestPrice();
         $currentTotalAmount = $this->calculateTotalAmount($instrument, $currentBestPrice);
 
         // Возвращаем обновление, если изменилось
         if ($prevBestPrice != $currentBestPrice || $prevTotalAmount != $currentTotalAmount) {
-            $outputPrice = $currentBestPrice ?? ($isBid ? 0 : 9999999999999999);
+            $outputPrice = $currentBestPrice ?? ($isBid ? 0 : self::NO_SELL_PRICE);
             $outputAmount = $currentBestPrice ? $currentTotalAmount : 0;
             return sprintf("%d;%s;%s;%d", $instrument_id, $side, $outputPrice, $outputAmount);
         }
@@ -67,56 +61,31 @@ class OrderBook
         return null;
     }
 
-    private function insertPriceSorted(array &$prices, float $price, bool $isBid): void
+    private function addOrder(array &$instrument, string $orderKey, float $price, int $amount_rest): void
     {
-        // Для покупок (Bid) сортируем по убыванию, для продаж (Ask) - по возрастанию
-        $comparator = $isBid
-            ? fn($a, $b) => $b <=> $a  // Убывание
-            : fn($a, $b) => $a <=> $b; // Возрастание
-
-        // Ищем место для вставки
-        $low = 0;
-        $high = count($prices) - 1;
-        $index = count($prices); // По умолчанию в конец
-
-        while ($low <= $high) {
-            $mid = (int)(($low + $high) / 2);
-            $cmp = $comparator($prices[$mid], $price);
-
-            if ($cmp === 0) {
-                $index = $mid;
-                break;
-            } elseif ($cmp < 0) {
-                $low = $mid + 1;
-            } else {
-                $high = $mid - 1;
-                $index = $mid;
-            }
-        }
-
-        // Вставляем цену, если её ещё нет в массиве
-        if (!in_array($price, $prices, true)) {
-            array_splice($prices, $index, 0, $price);
-        }
+        $instrument['orders'][$orderKey] = ['price' => $price, 'amount_rest' => $amount_rest];
+        $instrument['prices']->insertPrice($price);
     }
 
-
-    private function cleanupPrice(array &$instrument, float $price): void
+    private function removeOrder(array &$instrument, string $orderKey): void
     {
-        // Удаляем цену, если больше нет заявок с такой ценой
-        $hasOrdersWithPrice = false;
-        foreach ($instrument['orders'] as $order) {
-            if ($order['price'] == $price) {
-                $hasOrdersWithPrice = true;
-                break;
-            }
-        }
+        if (!isset($instrument['orders'][$orderKey])) return;
 
-        if (!$hasOrdersWithPrice) {
-            $key = array_search($price, $instrument['prices'], true);
-            if ($key !== false) {
-                array_splice($instrument['prices'], $key, 1);
-            }
+        $price = $instrument['orders'][$orderKey]['price'];
+        unset($instrument['orders'][$orderKey]);
+        $instrument['prices']->removePrice($price);
+    }
+
+    private function executeOrder(array &$instrument, string $orderKey, int $amount_rest): void
+    {
+        if (!isset($instrument['orders'][$orderKey])) return;
+
+        $price = $instrument['orders'][$orderKey]['price'];
+        $instrument['orders'][$orderKey]['amount_rest'] = $amount_rest;
+
+        if ($amount_rest === 0) {
+            unset($instrument['orders'][$orderKey]);
+            $instrument['prices']->removePrice($price);
         }
     }
 
@@ -126,7 +95,6 @@ class OrderBook
 
         $total = 0;
         foreach ($instrument['orders'] as $order) {
-            // Сравнение с учётом возможных ошибок округления float
             if (abs($order['price'] - $price) < 0.00001) {
                 $total += $order['amount_rest'];
             }

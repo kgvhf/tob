@@ -133,4 +133,17 @@ class OrderBookTest extends TestCase
         $memoryUsage = memory_get_usage() - $initialMemory;
         $this->assertLessThan(1024 * 1024, $memoryUsage, "Потребление памяти: $memoryUsage байт");
     }
+
+    public function testDuplicateOrder()
+    {
+        $this->orderBook->processOrder("A;1;0;55;B;100;2;2");
+        $output = $this->orderBook->processOrder("A;1;0;55;B;100;2;2");
+        $this->assertNull($output, "Дублирующая заявка не должна изменять состояние");
+    }
+
+    public function testRemoveNonExistentOrder()
+    {
+        $output = $this->orderBook->processOrder("A;1;2;55;B;100;2;0");
+        $this->assertNull($output, "Удаление несуществующей заявки не должно приводить к ошибке");
+    }
 }
