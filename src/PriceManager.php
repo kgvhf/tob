@@ -21,6 +21,7 @@ class PriceManager
 
     public function removePrice(float $price): void
     {
+        // на массивах со сплайсом работало быстрее же
         $newHeap = $this->heap instanceof SplMaxHeap ? new SplMaxHeap() : new SplMinHeap();
         foreach ($this->heap as $heapPrice) {
             if ($heapPrice !== $price) {
